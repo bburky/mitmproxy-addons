@@ -1,18 +1,18 @@
 """
-Preview and edit SAML XML in requests.
+Mark, preview and edit SAML XML in HTTP requests.
 
 Inspired by https://github.com/simplesamlphp/SAML-tracer
 
 This extension detects SAMLRequest and SAMLResponse in requests and supports:
+- flows with SAML parameters are marked with "S"
 - extracting and pretty printing SAML XML for preview
-- editing SAML XML with your $EDITOR
-- automatically editing SAML XML in request()
-- flows with SAML are marked with "S"
+- manually editing SAML XML with your $EDITOR
+- programmatically editing SAML XML in request()
 
 "SAML" may be selected as the "flow view mode" to enable pretty printing. The
 keyboard shortcut "s" or the "saml.edit" command may be used to edit SAML with
-your default $EDITOR.  Editing only works in console mitmproxy, SAML viewing
-still works in mitmweb however.
+your $EDITOR.  Editing only works in console mitmproxy, SAML viewing still
+works in mitmweb however.
 
 Note, editing SAML XML may invalidate SAML signatures.
 
@@ -30,22 +30,14 @@ from mitmproxy import contentviews
 from mitmproxy import exceptions
 from mitmproxy import flow
 from mitmproxy import http
-from mitmproxy.contentviews import xml_html
-from mitmproxy.coretypes import multidict
+from mitmproxy.contentviews.xml_html import ViewXmlHtml
+from mitmproxy.coretypes.multidict import MultiDictView
 from mitmproxy.tools.console.master import ConsoleMaster
-
-form_types = [
-    "query",
-    "urlencoded_form",
-    "multipart_form",
-]
 
 
 def get_saml(request: http.Request):
-    for form_type in form_types:
-        form = cast(
-            multidict.MultiDictView[str, str], getattr(request, form_type, None)
-        )
+    for form_type in ["query", "urlencoded_form", "multipart_form"]:
+        form = cast(MultiDictView[str, str], getattr(request, form_type, None))
         if form:
             if "SAMLRequest" in form:
                 saml_parameter = "SAMLRequest"
@@ -62,20 +54,20 @@ def get_saml(request: http.Request):
                     saml = zlib.decompress(saml, wbits=-15)
                     set_saml = lambda saml: form.set_all(  # noqa: E731
                         saml_parameter,
-                        [str(base64.b64encode(zlib.compress(saml, wbits=-15)))],
+                        [base64.b64encode(zlib.compress(saml, wbits=-15)).decode()],
                     )
                 except zlib.error:
-                    # If we get a zlib parse error, ignore it and guess that the data is uncompressed
+                    # If we get a zlib error, ignore it and guess that the data is uncompressed
                     pass
             if not set_saml:
                 set_saml = lambda saml: form.set_all(  # noqa: E731
-                    saml_parameter, [str(base64.b64encode(saml))]
+                    saml_parameter, [base64.b64encode(saml).decode()]
                 )
 
             return saml_parameter, set_saml, saml
 
 
-class ViewSAML(xml_html.ViewXmlHtml):
+class ViewSAML(ViewXmlHtml):
     name = "SAML"
 
     def __call__(
@@ -88,7 +80,7 @@ class ViewSAML(xml_html.ViewXmlHtml):
         **unknown_metadata,
     ) -> contentviews.TViewResult:
         if not isinstance(http_message, http.Request):
-            raise exceptions.CommandError("Not a Request.")
+            raise exceptions.CommandError("Not an http.Request.")
 
         # Extract SAML XML from request
         if parsed_saml := get_saml(http_message):
@@ -112,7 +104,7 @@ class ViewSAML(xml_html.ViewXmlHtml):
         if isinstance(http_message, http.Request):
             if get_saml(http_message):
                 return 2
-        return 0
+        return -1
 
 
 view = ViewSAML()
@@ -165,21 +157,22 @@ def request(flow: flow.Flow) -> None:
         return
 
     parsed_saml = get_saml(flow.request)
-    if parsed_saml:
-        saml_parameter, set_saml, saml = parsed_saml
+    if not parsed_saml:
+        return
+    saml_parameter, set_saml, saml = parsed_saml
 
-        # Mark SAML flows
-        flow.marked = "S"
+    # Mark SAML flows
+    flow.marked = "S"
 
-        # Optionally, perform an automated transformation on the SAML:
-        # if saml_parameter == "SAMLResponse":
-        #     saml = ...
-        #     set_saml(saml)
+    # Optionally, perform an automated transformation on the SAML:
+    # if saml_parameter == "SAMLResponse":
+    #     saml = ...
+    #     set_saml(saml)
 
-        # Or automatically generate a SAMLResponse for any SAMLRequest, skipping the IdP:
-        # if saml_parameter == "SAMLRequest":
-        #     flow.response = http.Response.make(
-        #         200,
-        #         b"<form method=post onload='document.forms[0].submit()' action='...'>...</form>",  # respond with a SAMLResponse <form>
-        #         {"Content-Type": "text/html"},
-        #     )
+    # Or automatically generate a SAMLResponse for any SAMLRequest, skipping the IdP:
+    # if saml_parameter == "SAMLRequest":
+    #     flow.response = http.Response.make(
+    #         200,
+    #         b"<form method=post onload='document.forms[0].submit()' action='...'>...</form>",  # respond with a SAMLResponse <form>
+    #         {"Content-Type": "text/html"},
+    #     )
